@@ -353,6 +353,14 @@ pc.extend(pc, function () {
             ];
 
             // Initialize extensions
+            this.unmaskedRenderer = null;
+            this.unmaskedVendor = null;
+            this.extRendererInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            if (this.extRendererInfo) {
+                this.unmaskedRenderer = gl.getParameter(this.extRendererInfo.UNMASKED_RENDERER_WEBGL);
+                this.unmaskedVendor = gl.getParameter(this.extRendererInfo.UNMASKED_VENDOR_WEBGL);
+            }
+
             this.extTextureFloat = gl.getExtension("OES_texture_float");
             this.extTextureFloatLinear = gl.getExtension("OES_texture_float_linear");
             if (this.extTextureFloat) {
@@ -476,7 +484,7 @@ pc.extend(pc, function () {
 
             // Calculate a estimate of the maximum number of bones that can be uploaded to the GPU
             // based on the number of available uniforms and the number of uniforms required for non-
-            // bone data.  This is based off of the Phong shader.  A user defined shader may have
+            // bone data.  This is based off of the Standard shader.  A user defined shader may have
             // even less space available for bones so this calculated value can be overridden via
             // pc.GraphicsDevice.setBoneLimit.
             var numUniforms = gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS);
@@ -485,10 +493,14 @@ pc.extend(pc, function () {
             numUniforms -= 1;     // Eye position
             numUniforms -= 4 * 4; // Up to 4 texture transforms
             this.boneLimit = Math.floor(numUniforms / 4);
-            // HACK: If the number of bones is above ~120-124, performance on the Mac Mini
-            // degrades drastically
-            if (this.boneLimit > 110) {
-                this.boneLimit = 110;
+
+            // Put a limit on the number of supported bones before skin partitioning must be performed
+            // Some GPUs have demonstrated performance issues if the number of vectors allocated to the
+            // skin matrix palette is left unbounded
+            this.boneLimit = Math.min(this.boneLimit, 128);
+
+            if (this.unmaskedRenderer === 'Mali-450 MP') {
+                this.boneLimit = 34;
             }
 
             pc.events.attach(this);
@@ -509,6 +521,7 @@ pc.extend(pc, function () {
             for(i=pc.PRIMITIVE_POINTS; i<=pc.PRIMITIVE_TRIFAN; i++) {
                 this._primsPerFrame[i] = 0;
             }
+            this._renderTargetCreationTime = 0;
 
             this._vram = {
                 tex: 0,
@@ -520,7 +533,8 @@ pc.extend(pc, function () {
                 vsCompiled: 0,
                 fsCompiled: 0,
                 linked: 0,
-                materialShaders: 0
+                materialShaders: 0,
+                compileTime: 0
             };
 
             // Handle IE11's inability to take UNSIGNED_BYTE as a param for vertexAttribPointer
@@ -612,6 +626,13 @@ pc.extend(pc, function () {
             if (target) {
                 // Create a new WebGL frame buffer object
                 if (!target._glFrameBuffer) {
+
+                    var startTime = pc.now();
+                    this.fire('fbo:create', {
+                        timestamp: startTime,
+                        target: this
+                    });
+
                     target._glFrameBuffer = gl.createFramebuffer();
                     gl.bindFramebuffer(gl.FRAMEBUFFER, target._glFrameBuffer);
 
@@ -662,6 +683,10 @@ pc.extend(pc, function () {
                         default:
                             break;
                     }
+
+
+                    this._renderTargetCreationTime += pc.now() - startTime;
+
                 } else {
                     gl.bindFramebuffer(gl.FRAMEBUFFER, target._glFrameBuffer);
                 }
